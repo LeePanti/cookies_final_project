@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
@@ -17,10 +18,19 @@ func main() {
 	mux.HandleFunc("/get", getCookie)
 	mux.HandleFunc("/setcharacters", setCharacters)
 	mux.HandleFunc("/getcharacters", getCharacters)
+	mux.HandleFunc("/setprotected", setProtected)
+	mux.HandleFunc("/getprotected", getProtected)
+
+	// secret key for tamper proofing
+	var err error
+	secretKey, err = hex.DecodeString("13d6b4dff8f84a10851021ec8608f814570d562c92fe6b5ec4c9f595bcb3234b")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// server
 	log.Println("starting server on port 9000...")
-	err := http.ListenAndServe(":9000", mux)
+	err = http.ListenAndServe(":9000", mux)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -117,4 +127,53 @@ func getCharacters(w http.ResponseWriter, r *http.Request) {
 
 /* ----------------------------------------------------------------------------- */
 
-//
+// setting up a tamper proof cookie with a HMAC signature infront of the cookie value
+
+// secret key for the HMAC signature
+var secretKey []byte
+
+// setting the cookie
+func setProtected(w http.ResponseWriter, r *http.Request) {
+	// create the cookie
+	cookie := http.Cookie{
+		Name:  "signedCookie",
+		Value: "this is the value in the tampered proof cookie",
+	}
+
+	// set the cookie using the internal/cookies package function WriteSigned()
+	err := cookies.WriteSigned(w, cookie, secretKey) // global secret key variable
+	// handle the errors
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+
+	// write out a response to the client
+	w.Write([]byte("tamper proof cookie has been set"))
+
+}
+
+// getting the cookie
+func getProtected(w http.ResponseWriter, r *http.Request) {
+	// read the cookie using the internal/cookies package function ReadSigned()
+	cookieValue, err := cookies.ReadSigned(r, "signedCookie", secretKey)
+	// handle the errors
+	if err != nil {
+		switch {
+		case errors.Is(err, http.ErrNoCookie):
+			http.Error(w, "No cookie found", http.StatusBadRequest)
+		case errors.Is(err, cookies.ErrInvalidValue):
+			http.Error(w, "Invalid value", http.StatusBadRequest)
+		default:
+			log.Println(err)
+			http.Error(w, "server error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// write the cookie value to the client
+	w.Write([]byte(cookieValue))
+}
+
+/* ----------------------------------------------------------------------------- */
