@@ -1,11 +1,17 @@
 package cookies
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
 )
 
 var (
@@ -99,5 +105,92 @@ func ReadSigned(r *http.Request, name string, secretKey []byte) (string, error) 
 	}
 
 	// return the original cookie value with no errors
+	return cookieValue, nil
+}
+
+/* ---------------------------------------------------------------- */
+
+// encrypts the cookie with the AES-GCM encryption so clients can't see the cookie value
+func WriteEncrypted(w http.ResponseWriter, cookie http.Cookie, secretKey []byte) error {
+	// create a new encryption block from the secret key
+	block, err := aes.NewCipher(secretKey)
+	if err != nil {
+		return err
+	}
+
+	// wrap the block in the Galios Counter Mode
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+
+	// create a nonce for 12 random bytes
+	nonce := make([]byte, aesGCM.NonceSize())
+	// fill the nonce with 12 random bytes
+	_, err = io.ReadFull(rand.Reader, nonce)
+	if err != nil {
+		return err
+	}
+
+	// prepare the text to be encrypted
+	plaintext := fmt.Sprintf("%s:%s", cookie.Name, cookie.Value)
+
+	// encrypt the plaintext using the nonce
+	encryptedValue := aesGCM.Seal(nonce, nonce, []byte(plaintext), nil)
+
+	// set the cookie value to be the newly encrypted value
+	cookie.Value = string(encryptedValue)
+
+	// write the cookie using the Write() function
+	return Write(w, cookie)
+}
+
+// decrypts the AES-GCM encrypted cookie
+func ReadEncrypted(r *http.Request, name string, secretKey []byte) (string, error) {
+	// read the encrypted value from the cookie
+	encryptedValue, err := Read(r, name)
+	if err != nil {
+		return "", err
+	}
+
+	// create a cipher block from the secret key
+	block, err := aes.NewCipher(secretKey)
+	if err != nil {
+		return "", err
+	}
+
+	// wrap cipher block in GCM
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	// check if the encrypted value size is at least the nonce size
+	if len(encryptedValue) < aesGCM.NonceSize() {
+		return "", ErrInvalidValue
+	}
+
+	// split the nonce and the encrypted value
+	nonce := encryptedValue[:aesGCM.NonceSize()]
+	encryptedText := encryptedValue[aesGCM.NonceSize():]
+
+	// decrypt the encrypted text to get the name and value of the cookie
+	decryptedText, err := aesGCM.Open(nil, []byte(nonce), []byte(encryptedText), nil)
+	if err != nil {
+		return "", ErrInvalidValue
+	}
+
+	// separate decrypted text into the name and value of the cookie
+	expectedCookieName, cookieValue, ok := strings.Cut(string(decryptedText), ":")
+	if !ok {
+		return "", ErrInvalidValue
+	}
+
+	// authenticate the cookie name
+	if expectedCookieName != name {
+		return "", ErrInvalidValue
+	}
+
+	// return the cookie value with no errors
 	return cookieValue, nil
 }
