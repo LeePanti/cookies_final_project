@@ -8,6 +8,7 @@ import (
 
 var (
 	ErrValueTooLong = errors.New("cookie value too long")
+	ErrInvalidValue = errors.New("invalid cookie value")
 )
 
 // encode and match length of cookie
@@ -25,4 +26,21 @@ func Write(w http.ResponseWriter, cookie http.Cookie) error {
 
 	// return no error
 	return nil
+}
+
+func Read(r *http.Request, name string) (string, error) {
+	// read cookie from request and handle errors
+	cookie, err := r.Cookie(name)
+	if err != nil {
+		return "", err
+	}
+
+	// decode cookie value from base64 and handle errors
+	cookieValue, err := base64.URLEncoding.DecodeString(cookie.Value)
+	if err != nil {
+		return "", ErrInvalidValue
+	}
+
+	// return the cookie value and no errors
+	return string(cookieValue), nil
 }
